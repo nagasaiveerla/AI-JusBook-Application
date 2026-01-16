@@ -25,39 +25,67 @@ class DataStore:
                 "price": "₹500"
             },
             {
+                "id": "hairwash",
+                "name": "Hair Wash",
+                "description": "Professional hair washing and conditioning service",
+                "duration": "30 minutes",
+                "price": "₹300"
+            },
+            {
+                "id": "beardtrim",
+                "name": "Beard Trim",
+                "description": "Professional beard trimming and shaping",
+                "duration": "25 minutes",
+                "price": "₹250"
+            },
+            {
+                "id": "haircolor",
+                "name": "Hair Color",
+                "description": "Professional hair coloring service",
+                "duration": "120 minutes",
+                "price": "₹1500"
+            },
+            {
                 "id": "facial",
-                "name": "Deep Cleansing Facial",
-                "description": "Rejuvenating facial treatment for all skin types",
+                "name": "Facial / Grooming",
+                "description": "Deep cleansing facial and grooming treatment",
                 "duration": "60 minutes",
                 "price": "₹800"
             },
             {
                 "id": "massage",
-                "name": "Relaxation Massage",
-                "description": "Full body relaxation massage therapy",
-                "duration": "90 minutes",
-                "price": "₹1200"
-            },
-            {
-                "id": "manicure",
-                "name": "Manicure & Pedicure",
-                "description": "Complete nail care and beauty treatment",
-                "duration": "75 minutes",
+                "name": "Massage (Head / Shoulder)",
+                "description": "Relaxing head and shoulder massage therapy",
+                "duration": "45 minutes",
                 "price": "₹600"
             },
             {
-                "id": "consultation",
-                "name": "Beauty Consultation",
-                "description": "Personalized beauty and wellness consultation",
+                "id": "kidshaircut",
+                "name": "Kids Haircut",
+                "description": "Specialized haircut service for children",
                 "duration": "30 minutes",
-                "price": "₹300"
+                "price": "₹350"
             },
             {
-                "id": "package",
-                "name": "Premium Package",
-                "description": "Complete beauty package with multiple services",
+                "id": "makeover",
+                "name": "Complete Makeover Package",
+                "description": "Complete makeover with multiple services",
                 "duration": "180 minutes",
                 "price": "₹2500"
+            },
+            {
+                "id": "bridal",
+                "name": "Bridal Grooming",
+                "description": "Special bridal grooming and styling package",
+                "duration": "240 minutes",
+                "price": "₹5000"
+            },
+            {
+                "id": "custom",
+                "name": "Custom Service (Other)",
+                "description": "Custom service as per your requirements",
+                "duration": "60 minutes",
+                "price": "Contact for pricing"
             }
         ]
     
@@ -78,11 +106,10 @@ class DataStore:
             if date.weekday() == 6:
                 continue
             
-            # Generate time slots (9 AM to 6 PM)
+            # Generate time slots matching user requirements
             time_slots = [
-                "09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM",
-                "12:00 PM", "12:30 PM", "01:00 PM", "01:30 PM", "02:00 PM", "02:30 PM",
-                "03:00 PM", "03:30 PM", "04:00 PM", "04:30 PM", "05:00 PM", "05:30 PM"
+                "10:00 AM", "11:00 AM", "12:30 PM", "02:00 PM", 
+                "03:15 PM", "04:30 PM", "06:00 PM", "07:15 PM"
             ]
             
             for i, time_slot in enumerate(time_slots):
@@ -105,6 +132,15 @@ class DataStore:
                 })
         
         return sorted(slots, key=lambda x: (x["date"], x["time"]))
+    
+    def get_available_time_slots(self) -> List[str]:
+        """Get list of available time slots"""
+        return ["10:00 AM", "11:00 AM", "12:30 PM", "02:00 PM", 
+                "03:15 PM", "04:30 PM", "06:00 PM", "07:15 PM"]
+    
+    def get_staff_options(self) -> List[str]:
+        """Get staff preference options"""
+        return ["Any Available Staff", "Senior Stylist", "Junior Stylist", "Specific Staff (Name if known)"]
     
     def _load_events(self) -> List[Dict[str, Any]]:
         """Load upcoming events"""
@@ -178,6 +214,45 @@ class DataStore:
             if slot["slot_id"] == slot_id and slot["available"]:
                 return slot
         return None
+    
+    def find_or_create_slot(self, service: str, date: str, time: str) -> Dict[str, Any]:
+        """Find an available slot for service/date/time, or create one if needed"""
+        # First, try to find an existing available slot
+        for slot in self.slots:
+            if (slot["date"] == date and 
+                slot["time"] == time and 
+                slot["service"] == service and 
+                slot["available"]):
+                return slot
+        
+        # If no exact match, find any available slot at that time (we'll update the service)
+        for slot in self.slots:
+            if slot["date"] == date and slot["time"] == time and slot["available"]:
+                # Update the service for this slot
+                slot["service"] = service
+                service_details = next((s for s in self.services if s["name"] == service), None)
+                if service_details:
+                    slot["duration"] = service_details["duration"]
+                    slot["price"] = service_details["price"]
+                return slot
+        
+        # If still no match, create a new slot
+        slot_id = f"SL{date.replace('-', '')}{len(self.slots):03d}"
+        service_details = next((s for s in self.services if s["name"] == service), None)
+        
+        new_slot = {
+            "slot_id": slot_id,
+            "date": date,
+            "day": datetime.strptime(date, "%Y-%m-%d").strftime("%A"),
+            "time": time,
+            "service": service,
+            "duration": service_details["duration"] if service_details else "60 minutes",
+            "available": True,
+            "price": service_details["price"] if service_details else "Contact for pricing"
+        }
+        
+        self.slots.append(new_slot)
+        return new_slot
     
     def book_slot(self, slot_id: str, service: str, customer_name: str, contact: str) -> Dict[str, Any]:
         """Book a slot"""
