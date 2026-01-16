@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jusbook Chatbot</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f6f7fb; margin: 0; }
+    .chat-container { max-width: 760px; margin: 24px auto; background: #fff; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); overflow: hidden; display: flex; flex-direction: column; height: 80vh; }
+    .chat-header { background: linear-gradient(135deg,#6c63ff,#3b82f6); color:#fff; padding: 16px 20px; }
+    .chat-header h1 { font-size: 18px; margin: 0 0 4px 0; }
+    .chat-header p { margin: 0; font-size: 12px; opacity: 0.9; }
+    .chat-messages { flex: 1; overflow-y: auto; padding: 16px; background: #fafafa; }
+    .message { margin: 10px 0; padding: 10px 14px; border-radius: 10px; max-width: 80%; line-height: 1.5; font-size: 14px; }
+    .bot-message { background: #eef2ff; color: #1f2937; border-top-left-radius: 4px; }
+    .user-message { background: #d1fae5; color: #065f46; border-top-right-radius: 4px; margin-left: auto; }
+    .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e5e7eb; background: #fff; }
+    .chat-input textarea { flex: 1; resize: none; height: 50px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+    .chat-input button { background: #3b82f6; color: #fff; border: none; padding: 0 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    .chat-input button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-top: 1px solid #e5e7eb; background: #fff; }
+    .suggestions button { background: #f3f4f6; border: 1px solid #e5e7eb; color: #374151; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    .suggestions button:hover { background: #e5e7eb; }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <div class="chat-header">
+      <h1>Jusbook Assistant</h1>
+      <p>Book a slot via chat. Ask about services and availability.</p>
+    </div>
+
+    <div id="chatMessages" class="chat-messages"></div>
+
+    <div class="suggestions">
+      <button data-message="hello">Hello</button>
+      <button data-message="available slots">Available slots</button>
+      <button data-message="services">Services</button>
+      <button data-message="book slot">Book a slot</button>
+    </div>
+
+    <div class="chat-input">
+      <textarea id="messageInput" placeholder="Type your message..."></textarea>
+      <button id="sendButton">Send</button>
+    </div>
+  </div>
+
+  <script>
+    function addMessage(text, sender) {
+      var wrap = document.getElementById('chatMessages');
+      var div = document.createElement('div');
+      div.className = 'message ' + (sender === 'bot' ? 'bot-message' : 'user-message');
+      var safe = String(text).split('\n').join('<br>');
+      div.innerHTML = safe;
+      wrap.appendChild(div);
+      wrap.scrollTop = wrap.scrollHeight;
+    }
+
+    function sendMessage(fromSuggestion) {
+      var input = document.getElementById('messageInput');
+      var sendBtn = document.getElementById('sendButton');
+      var text = fromSuggestion || input.value.trim();
+      if (!text) return;
+      addMessage(text, 'user');
+      input.value = '';
+      input.disabled = true; sendBtn.disabled = true;
+      fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, session_id: 'web-session' })
+      }).then(function(resp){ return resp.json(); })
+        .then(function(data){ addMessage(data.response || 'No response', 'bot'); })
+        .catch(function(err){ addMessage('Error: ' + err.message, 'bot'); })
+        .finally(function(){ input.disabled = false; sendBtn.disabled = false; input.focus(); });
+    }
+
+    document.getElementById('sendButton').addEventListener('click', function(){ sendMessage(); });
+    document.getElementById('messageInput').addEventListener('keydown', function(e){ if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+    Array.prototype.forEach.call(document.querySelectorAll('.suggestions button'), function(btn){ btn.addEventListener('click', function(){ var m = btn.getAttribute('data-message'); sendMessage(m); }); });
+
+    addMessage('Welcome! You can ask about services, available slots, or say "book slot" to start.', 'bot');
+  </script>
+</body>
+</html>
