@@ -47,6 +47,13 @@ class JusbookChatbot:
     def _generate_response(self, intent: str, message: str, session: Dict) -> str:
         """Generate response based on classified intent"""
         
+        # Check if user is in the middle of a booking flow - prioritize that
+        current_state = session.get("conversation_state", "")
+        if current_state in ["selecting_service", "selecting_time_slot", "selecting_staff", 
+                            "showing_details", "awaiting_customer_details"]:
+            # User is in booking flow, handle it directly
+            return self._handle_booking(message, session)
+        
         if intent == "greeting":
             return self._handle_greeting()
         
@@ -146,153 +153,343 @@ class JusbookChatbot:
         return response
     
     def _handle_booking(self, message: str, session: Dict) -> str:
-        """Handle booking requests"""
-        # If the message is exactly "Book a slot" or "Book Slot", show services and date/time options
-        if message.strip().lower() in ["book a slot", "book slot"]:
-            session["conversation_state"] = "booking_started"
-            
-            # Get services for display
-            services = self.data_store.get_services()
-            
-            # Get available dates (next 7 days)
-            today = datetime.now()
-            available_dates = []
-            for i in range(7):
-                date = today + timedelta(days=i)
-                available_dates.append(date.strftime("%Y-%m-%d"))
-            
-            # Common time slots
-            time_slots = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00", "17:00"]
-            
-            # Build response with services and options
-            response = "I'd be happy to help you book a slot! Here are our services:\n\n"
-            
-            # Add services
-            for service in services:
-                response += f"🔹 **{service['name']}** - {service['duration']} - {service['price']}\n"
-            
-            response += "\n**Available Dates:**\n"
-            for date in available_dates:
-                response += f"• {date}\n"
-                
-            response += "\n**Common Time Slots:**\n"
-            for i in range(0, len(time_slots), 2):
-                if i+1 < len(time_slots):
-                    response += f"• {time_slots[i]} | {time_slots[i+1]}\n"
-                else:
-                    response += f"• {time_slots[i]}\n"
-            
-            response += "\nPlease select a service, date, and time, or ask to see available slots."
-            return response
+        """Handle booking requests with step-by-step flow"""
+        current_state = session.get("conversation_state", "")
+        message_lower = message.strip().lower()
         
-        # Check if this is a continuation of booking process
-        if session.get("conversation_state") == "awaiting_booking_details":
+        # STEP 1: Show service selection dropdown
+        if current_state == "" or current_state == "greeting" or message_lower in ["book", "book a slot", "book slot", "i want to book", "make a booking"]:
+            session["conversation_state"] = "selecting_service"
+            session["context"] = {}
+            return self._show_service_selection()
+        
+        # STEP 2: Handle service selection
+        elif current_state == "selecting_service":
+            selected_service = self._match_service_from_text(message)
+            if selected_service:
+                session["conversation_state"] = "selecting_time_slot"
+                session["context"]["selected_service"] = selected_service
+                return self._show_time_slot_selection()
+            else:
+                return "I couldn't match that to a service. Please select a service from the dropdown or type the service name clearly."
+        
+        # STEP 3: Handle time slot selection
+        elif current_state == "selecting_time_slot":
+            selected_slot = self._match_time_slot_from_text(message)
+            if selected_slot:
+                # Check if slot is available
+                if selected_slot in self.data_store.get_available_time_slots():
+                    session["conversation_state"] = "selecting_staff"
+                    session["context"]["selected_time_slot"] = selected_slot
+                    return self._show_staff_selection()
+                else:
+                    return "That slot is unavailable. Please select a valid slot from the dropdown."
+            else:
+                return "Please select a valid time slot from the dropdown."
+        
+        # STEP 4: Handle staff selection (optional)
+        elif current_state == "selecting_staff":
+            staff_preference = self._match_staff_from_text(message)
+            if staff_preference or message_lower in ["any", "anyone", "no preference", "skip", "next"]:
+                session["conversation_state"] = "showing_details"
+                session["context"]["staff_preference"] = staff_preference or "Any Available Staff"
+                return self._show_service_details(session)
+            else:
+                return "Please select a staff preference from the dropdown or say 'any' to continue."
+        
+        # STEP 5: Handle booking confirmation
+        elif current_state == "showing_details":
+            if message_lower in ["confirm", "confirm booking", "yes", "book it", "proceed"]:
+                session["conversation_state"] = "awaiting_customer_details"
+                return "To complete your booking, please provide:\n\n1. Your full name\n2. Your 10-digit phone number\n\nExample: 'John Smith, 9876543210'"
+            elif message_lower in ["modify", "change", "edit", "go back"]:
+                session["conversation_state"] = "selecting_service"
+                session["context"].pop("selected_time_slot", None)
+                session["context"].pop("staff_preference", None)
+                return self._show_service_selection()
+            elif message_lower in ["cancel", "no", "abort"]:
+                session["conversation_state"] = "greeting"
+                session["context"] = {}
+                return "Your booking process has been cancelled. Let me know if you need anything else!"
+            else:
+                return "Would you like to confirm this booking? Please respond with 'Confirm Booking', 'Modify', or 'Cancel'."
+        
+        # STEP 6: Handle customer details and finalize booking
+        elif current_state == "awaiting_customer_details":
             return self._process_booking_details(message, session)
         
-        # Extract slot ID or service from message
-        slot_id = self._extract_slot_id_from_message(message)
-        service = self._extract_service_from_message(message)
+        # Handle if user wants to change service
+        elif "change" in message_lower and "service" in message_lower:
+            session["conversation_state"] = "selecting_service"
+            session["context"] = {}
+            return self._show_service_selection()
         
-        if slot_id:
-            # Direct slot booking
-            session["conversation_state"] = "awaiting_booking_details"
-            session["context"]["slot_id"] = slot_id
-            return f"Great! You want to book slot {slot_id}. To complete your booking, please provide:\n\n1. Your full name\n2. Your contact number\n\nExample: 'John Smith, 9876543210'"
+        # Handle if user jumps steps
+        elif "slot" in message_lower or "time" in message_lower:
+            if current_state not in ["selecting_time_slot", "selecting_staff", "showing_details"]:
+                return "Please select a service first to continue."
         
-        elif service:
-            # Service-based booking
-            slots = self.data_store.get_available_slots(service_filter=service)
-            if not slots:
-                return f"Sorry, no slots are available for {service} right now. Would you like to see other available services?"
-            
-            response = f"Available slots for {service}:\n\n"
-            for slot in slots[:5]:
-                response += f"📅 {slot['date']} at {slot['time']} (ID: {slot['slot_id']})\n"
-            
-            response += f"\nTo book, please tell me which slot ID you prefer along with your name and contact number."
-            return response
-        
+        # Default: start booking flow
         else:
-            return "I'd be happy to help you book a slot! Please either:\n\n1. Tell me a specific Slot ID from the available slots\n2. Ask for available slots first\n3. Specify a service you're interested in\n\nWhat would you prefer?"
+            session["conversation_state"] = "selecting_service"
+            session["context"] = {}
+            return self._show_service_selection()
+    
+    def _show_service_selection(self) -> str:
+        """STEP 1: Show service selection dropdown"""
+        services = self.data_store.get_services()
+        response = "Please select a service from the dropdown below:\n\n"
+        response += "Services List:\n"
+        for service in services:
+            response += f"• {service['name']}\n"
+        return response
+    
+    def _show_time_slot_selection(self) -> str:
+        """STEP 2: Show time slot dropdown"""
+        time_slots = self.data_store.get_available_time_slots()
+        response = "Great! Please select an available time slot for your chosen service:\n\n"
+        response += "Available Slots:\n"
+        for slot in time_slots:
+            response += f"• {slot}\n"
+        return response
+    
+    def _show_staff_selection(self) -> str:
+        """STEP 3: Show staff preference dropdown (optional)"""
+        staff_options = self.data_store.get_staff_options()
+        response = "Would you like to choose a preferred stylist?\n\n"
+        response += "Staff Preference:\n"
+        for option in staff_options:
+            response += f"• {option}\n"
+        return response
+    
+    def _show_service_details(self, session: Dict) -> str:
+        """STEP 4: Show service details (price + duration)"""
+        service_name = session["context"].get("selected_service")
+        time_slot = session["context"].get("selected_time_slot")
+        staff = session["context"].get("staff_preference", "Any Available Staff")
+        
+        # Get service details
+        services = self.data_store.get_services()
+        service_details = next((s for s in services if s["name"] == service_name), None)
+        
+        if not service_details:
+            return "Error: Service not found. Please start over."
+        
+        response = "Service Summary:\n\n"
+        response += f"Service: {service_name}\n"
+        response += f"Duration: {service_details['duration']}\n"
+        response += f"Price: {service_details['price']}\n"
+        response += f"Slot: {time_slot}\n"
+        response += f"Staff: {staff}\n\n"
+        response += "Would you like to confirm this booking?\n\n"
+        response += "Options:\n"
+        response += "• Confirm Booking\n"
+        response += "• Cancel\n"
+        response += "• Modify\n"
+        return response
     
     def _process_booking_details(self, message: str, session: Dict) -> str:
-        """Process booking details provided by user"""
-        # Extract name and phone from message
-        parts = message.split(',')
-        if len(parts) >= 2:
-            name = parts[0].strip()
-            contact = parts[1].strip()
-            slot_id = session["context"].get("slot_id")
-            
-            if slot_id:
-                try:
-                    # Get slot details
-                    slot_details = self.data_store.get_slot_by_id(slot_id)
-                    if slot_details:
-                        # Attempt booking
-                        booking_result = self.data_store.book_slot(
-                            slot_id, slot_details['service'], name, contact
-                        )
-                        
-                        if booking_result['success']:
-                            session["conversation_state"] = "booking_complete"
-                            # Store booking details in session for reference
-                            session["context"]["last_booking"] = {
-                                "name": name,
-                                "service": slot_details['service'],
-                                "date": slot_details['date'],
-                                "time": slot_details['time'],
-                                "duration": slot_details['duration'],
-                                "location": slot_details.get('location', 'Main Office'),
-                                "contact": contact,
-                                "booking_id": booking_result['booking_id'],
-                                "slot_id": slot_id,
-                                "price": slot_details.get('price', 'Contact for pricing'),
-                                "provider": slot_details.get('provider', 'Our Staff'),
-                                "additional_info": slot_details.get('additional_info', '')
-                            }
-                            
-                            # Enhanced booking confirmation with more details
-                            response = f"🎉 Your slot is booked!\n\n"
-                            response += f"**Booking Details:**\n"
-                            response += f"• Name: {name}\n"
-                            response += f"• Service: {slot_details['service']}\n"
-                            response += f"• Date & Time: {slot_details['date']} at {slot_details['time']}\n"
-                            response += f"• Duration: {slot_details['duration']}\n"
-                            response += f"• Location: {slot_details.get('location', 'Main Office')}\n"
-                            response += f"• Provider: {slot_details.get('provider', 'Our Staff')}\n"
-                            response += f"• Contact: {contact}\n"
-                            response += f"• Booking ID: {booking_result['booking_id']}\n"
-                            
-                            # Add pricing information if available
-                            if 'price' in slot_details:
-                                response += f"• Price: {slot_details['price']}\n"
-                                
-                            # Add any additional information about the slot
-                            if 'additional_info' in slot_details and slot_details['additional_info']:
-                                response += f"\n**Additional Information:**\n{slot_details['additional_info']}\n"
-                                
-                            response += f"\n**Slot Details:**\n"
-                            response += f"• Slot ID: {slot_id}\n"
-                            response += f"• Availability: Booked (Confirmed)\n"
-                            
-                            # Add cancellation policy if available
-                            cancellation_policy = slot_details.get('cancellation_policy', 'Standard 24-hour cancellation policy applies.')
-                            response += f"\n**Cancellation Policy:**\n{cancellation_policy}\n"
-                            
-                            response += f"\nA confirmation has been sent to your contact number. Please arrive 10 minutes before your appointment. Is there anything else I can help you with?"
-                            
-                            return response
-                        else:
-                            return f"Sorry, there was an issue with your booking: {booking_result.get('error', 'Unknown error')}. Please try again or contact us directly."
-                    else:
-                        return "Sorry, that slot is no longer available. Would you like to see other available slots?"
-                except Exception as e:
-                    return f"An error occurred while processing your booking: {str(e)}. Please try again."
+        """STEP 6: Process booking details and finalize booking"""
+        import re
+        parts = [p.strip() for p in message.split(',')]
+        if len(parts) < 2:
+            return "Please provide your full name and 10-digit phone number.\n\nExample: 'John Smith, 9876543210'"
+        name = parts[0]
+        contact = parts[1]
+
+        # Validate full name: at least two words, alphabetic characters allowed
+        name_words = [w for w in re.split(r"\s+", name) if w]
+        valid_name = len(name_words) >= 2 and all(re.match(r"^[A-Za-z\-'.]+$", w) for w in name_words)
+
+        # Normalize and validate phone: exactly 10 digits
+        phone_digits = re.sub(r"\D", "", contact)
+        valid_phone = len(phone_digits) == 10
+
+        if not valid_name or not valid_phone:
+            reason = []
+            if not valid_name:
+                reason.append("full name looks incomplete")
+            if not valid_phone:
+                reason.append("phone must be 10 digits")
+            reason_text = ", ".join(reason)
+            return f"Please provide valid details ({reason_text}).\n\nFormat: 'John Smith, 9876543210'"
+
+        service_name = session["context"].get("selected_service")
+        time_slot = session["context"].get("selected_time_slot")
+        staff_preference = session["context"].get("staff_preference", "Any Available Staff")
+
+        if not service_name or not time_slot:
+            return "Error: Missing booking information. Please start the booking process again."
+
+        services = self.data_store.get_services()
+        service_details = next((s for s in services if s["name"] == service_name), None)
+        if not service_details:
+            return "Error: Service not found. Please start over."
+
+        # Use today as booking date for the selected time slot
+        from datetime import datetime
+        today = datetime.now()
+        date_str = today.strftime("%Y-%m-%d")
+
+        matching_slot = self.data_store.find_or_create_slot(service_name, date_str, time_slot)
+        slot_id = matching_slot['slot_id']
+
+        try:
+            booking_result = self.data_store.book_slot(
+                slot_id, service_name, name, phone_digits
+            )
+            if booking_result['success']:
+                session["conversation_state"] = "booking_complete"
+                session["context"]["last_booking"] = {
+                    "name": name,
+                    "service": service_name,
+                    "date": date_str,
+                    "time": time_slot,
+                    "duration": service_details['duration'],
+                    "contact": phone_digits,
+                    "booking_id": booking_result['booking_id'],
+                    "slot_id": slot_id,
+                    "price": service_details['price'],
+                    "staff": staff_preference
+                }
+
+                response = "Booking Confirmed ✅\n\n"
+                response += f"Customer: {name}\n"
+                response += f"Service: {service_name} ({service_details['duration']})\n"
+                response += f"Slot: {date_str} at {time_slot}\n"
+                response += f"Staff: {staff_preference}\n"
+                response += f"Price: {service_details['price']}\n"
+                response += f"Contact: {phone_digits}\n"
+                response += f"Booking ID: {booking_result['booking_id']}\n\n"
+                response += "Thank you for booking with Jusbook!"
+                return response
             else:
-                return "I couldn't understand your booking details. Please provide your name and contact number separated by a comma."
+                return f"Sorry, there was an issue with your booking: {booking_result.get('error', 'Unknown error')}. Please try again or contact us directly."
+        except Exception as e:
+            return f"An error occurred while processing your booking: {str(e)}. Please try again."
         else:
-            return "I'd be happy to help you book a slot! Please either:\n\n1. Tell me a specific Slot ID from the available slots\n2. Ask for available slots first\n3. Specify a service you're interested in\n\nWhat would you prefer?"
+            return "I couldn't understand your booking details. Please provide your name and contact number separated by a comma.\n\nExample: 'John Smith, 9876543210'"
+    
+    def _match_service_from_text(self, text: str) -> str:
+        """Match user text input to a service"""
+        text_lower = text.lower().strip()
+        services = self.data_store.get_services()
+        
+        # Exact match first
+        for service in services:
+            if service['name'].lower() == text_lower:
+                return service['name']
+        
+        # Partial match
+        for service in services:
+            service_name_lower = service['name'].lower()
+            # Check if service name is in text or text is in service name
+            if service_name_lower in text_lower or text_lower in service_name_lower:
+                return service['name']
+        
+        # Keyword matching
+        service_keywords = {
+            "haircut": "Haircut & Styling",
+            "hair cut": "Haircut & Styling",
+            "cut": "Haircut & Styling",
+            "styling": "Haircut & Styling",
+            "hair wash": "Hair Wash",
+            "wash": "Hair Wash",
+            "beard": "Beard Trim",
+            "trim": "Beard Trim",
+            "beard trim": "Beard Trim",
+            "hair color": "Hair Color",
+            "color": "Hair Color",
+            "coloring": "Hair Color",
+            "facial": "Facial / Grooming",
+            "grooming": "Facial / Grooming",
+            "massage": "Massage (Head / Shoulder)",
+            "head massage": "Massage (Head / Shoulder)",
+            "shoulder massage": "Massage (Head / Shoulder)",
+            "kids": "Kids Haircut",
+            "kid": "Kids Haircut",
+            "children": "Kids Haircut",
+            "makeover": "Complete Makeover Package",
+            "package": "Complete Makeover Package",
+            "bridal": "Bridal Grooming",
+            "bride": "Bridal Grooming",
+            "wedding": "Bridal Grooming",
+            "custom": "Custom Service (Other)",
+            "other": "Custom Service (Other)"
+        }
+        
+        for keyword, service_name in service_keywords.items():
+            if keyword in text_lower:
+                return service_name
+        
+        return None
+    
+    def _match_time_slot_from_text(self, text: str) -> str:
+        """Match user text input to a time slot"""
+        text_lower = text.lower().strip()
+        available_slots = self.data_store.get_available_time_slots()
+        
+        # Try exact match
+        for slot in available_slots:
+            if slot.lower() == text_lower:
+                return slot
+        
+        # Try partial match (e.g., "10:00" matches "10:00 AM")
+        for slot in available_slots:
+            slot_time = slot.replace(" AM", "").replace(" PM", "").lower()
+            if slot_time in text_lower or text_lower in slot_time:
+                return slot
+        
+        # Try to extract time pattern
+        time_patterns = [
+            r'(\d{1,2}):(\d{2})\s*(am|pm)?',
+            r'(\d{1,2})\s*(am|pm)',
+            r'(\d{1,2}):(\d{2})'
+        ]
+        
+        import re
+        for pattern in time_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                hour = int(match.group(1))
+                minute = match.group(2) if len(match.groups()) > 1 and match.group(2).isdigit() else "00"
+                am_pm = match.group(3) if len(match.groups()) > 2 else None
+                
+                # Convert to 12-hour format
+                if hour < 12 and not am_pm:
+                    am_pm = "am"
+                elif hour >= 12:
+                    if hour > 12:
+                        hour = hour - 12
+                    am_pm = "pm" if not am_pm else am_pm
+                
+                formatted_time = f"{hour:02d}:{minute} {am_pm.upper()}"
+                if formatted_time in available_slots:
+                    return formatted_time
+        
+        return None
+    
+    def _match_staff_from_text(self, text: str) -> str:
+        """Match user text input to staff preference"""
+        text_lower = text.lower().strip()
+        staff_options = self.data_store.get_staff_options()
+        
+        # Exact match
+        for option in staff_options:
+            if option.lower() == text_lower:
+                return option
+        
+        # Keyword matching
+        if "any" in text_lower or "anyone" in text_lower or "no preference" in text_lower:
+            return "Any Available Staff"
+        elif "senior" in text_lower:
+            return "Senior Stylist"
+        elif "junior" in text_lower:
+            return "Junior Stylist"
+        elif "specific" in text_lower or "name" in text_lower:
+            return "Specific Staff (Name if known)"
+        
+        return None
     
     def _handle_slot_broadcast(self) -> str:
         """Handle slot broadcast requests"""
