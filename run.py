@@ -15,8 +15,9 @@ def main():
     """Run the Jusbook chatbot application"""
     print("🤖 Starting Jusbook AI Chatbot...")
     print("📱 Building intelligent booking assistant...")
-    print("🌐 Server will be available at: http://localhost:8000")
-    print("📋 API documentation at: http://localhost:8000/docs")
+    port = int(os.getenv("PORT", "8000"))
+    print(f"🌐 Server will be available at: http://localhost:{port}")
+    print(f"📋 API documentation at: http://localhost:{port}/docs")
     print("🔄 Press Ctrl+C to stop the server")
     print("-" * 50)
     
@@ -24,8 +25,8 @@ def main():
         uvicorn.run(
             "app:app",
             host="0.0.0.0",
-            port=8000,
-            reload=True,  # Enable auto-reload for development
+            port=port,
+            reload=os.getenv("RELOAD", "true").lower() == "true",  # Enable auto-reload for development
             log_level="info"
         )
     except KeyboardInterrupt:
